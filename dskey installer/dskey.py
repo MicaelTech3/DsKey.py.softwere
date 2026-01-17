@@ -1,553 +1,541 @@
-# =====================================================
-# DSKEY – INSTALADOR E GERENCIADOR DE LAUNCHER
-# ARQUIVO ÚNICO | LAYOUT PRESERVADO
-# =====================================================
-
-import os
-import sys
+import subprocess
+import tkinter as tk
+from tkinter import filedialog, simpledialog, scrolledtext
 import platform
+import os
 import zipfile
 import urllib.request
-import stat
-import threading
-import subprocess
 import webbrowser
-import tkinter as tk
-from tkinter import messagebox, filedialog
 import re
+import time
+import threading
 
-# =====================================================
-# CONFIGURAÇÕES GERAIS
-# =====================================================
+# ================= CONFIG =================
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ADB_DIR = os.path.join(BASE_DIR, "platform-tools")
+APP_VERSION = "Versão 1.0.2"
 
-SYSTEM = platform.system().lower()
+PACKAGE_DSKEY = "com.dsigner.dskey"
+PACKAGE_LAUNCHER = "com.google.android.tvlauncher"
 
+ADB_DIR = "./adb"
+ADB_PATH = None
+SCRCPY_PATH = None
+SCRCPY_PROCESS = None
+SIDEBAR_OPEN = False
 
-DOWNLOADS_DIR = os.path.join(BASE_DIR, "downloads")
-os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+CMD_PASSWORD = "1234"  # Altere esta senha conforme necessário
 
-CONFIG_FILE = os.path.join(BASE_DIR, "config_admin.txt")
+# ================= ADB SETUP =================
 
-FILE_MANAGER_PKG = "com.alphainventor.filemanager"
+def download_adb():
+    global ADB_PATH
+    system = platform.system().lower()
 
-if SYSTEM == "windows":
-    ADB_NAME = "adb.exe"
-    ADB_URL = "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
-elif SYSTEM == "linux":
-    ADB_NAME = "adb"
-    ADB_URL = "https://dl.google.com/android/repository/platform-tools-latest-linux.zip"
-else:
-    messagebox.showerror("Erro", "Sistema operacional não suportado")
-    sys.exit(1)
-
-ADB_PATH = os.path.join(ADB_DIR, ADB_NAME)
-
-APP_VERSION = "v1.0.2"
-blink = True
-menu_open = False
-
-CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-
-DSKEY_PKG = "com.dsigner.dskey"
-
-# URLs e Packages Padrão
-DEFAULT_UPDATE_URL = "https://atualizacao-dskey.vercel.app"
-DEFAULT_DSKEY_URL = "https://baixar-dskey.vercel.app"
-DEFAULT_DSKEY_PKG = "com.dsigner.dskey"
-
-# Carrega configurações personalizadas
-def load_config():
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                config = {}
-                for line in f:
-                    if "=" in line:
-                        key, value = line.strip().split("=", 1)
-                        config[key] = value
-                return config
-        except:
-            pass
-    return {}
-
-def save_config(config):
-    try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            for key, value in config.items():
-                f.write(f"{key}={value}\n")
-        return True
-    except:
+    if system == "windows":
+        url = "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
+        adb_bin = "adb.exe"
+    elif system == "linux":
+        url = "https://dl.google.com/android/repository/platform-tools-latest-linux.zip"
+        adb_bin = "adb"
+    elif system == "darwin":
+        url = "https://dl.google.com/android/repository/platform-tools-latest-darwin.zip"
+        adb_bin = "adb"
+    else:
         return False
 
-config = load_config()
-UPDATE_URL = config.get("UPDATE_URL", DEFAULT_UPDATE_URL)
-DSKEY_DOWNLOAD_URL = config.get("DSKEY_URL", DEFAULT_DSKEY_URL)
-DSKEY_PKG = config.get("DSKEY_PKG", DEFAULT_DSKEY_PKG)
-
-# =====================================================
-# ADB UTIL
-# =====================================================
-
-def adb_ok():
-    return os.path.exists(ADB_PATH)
-
-def find_adb():
-    for root, _, files in os.walk(ADB_DIR):
-        if ADB_NAME in files:
-            return os.path.join(root, ADB_NAME)
-    return None
-
-def download_adb(update):
     os.makedirs(ADB_DIR, exist_ok=True)
     zip_path = os.path.join(ADB_DIR, "platform-tools.zip")
+    urllib.request.urlretrieve(url, zip_path)
 
-    update(f"Baixando ADB para seu sistema ({SYSTEM})")
-    urllib.request.urlretrieve(ADB_URL, zip_path)
-
-    with zipfile.ZipFile(zip_path, "r") as z:
-        z.extractall(ADB_DIR)
+    with zipfile.ZipFile(zip_path, "r") as zip_ref:
+        zip_ref.extractall(ADB_DIR)
 
     os.remove(zip_path)
+    ADB_PATH = os.path.join(ADB_DIR, "platform-tools", adb_bin)
+    os.chmod(ADB_PATH, 0o755)
+    return True
 
-    adb_real = find_adb()
-    if not adb_real:
-        raise RuntimeError("ADB não encontrado após extração")
 
+def setup_adb():
     global ADB_PATH
-    ADB_PATH = adb_real
+    for root, _, files in os.walk(ADB_DIR):
+        if "adb" in files or "adb.exe" in files:
+            ADB_PATH = os.path.join(root, "adb.exe" if os.name == "nt" else "adb")
+            return True
+    return download_adb()
 
-    if SYSTEM == "linux":
-        os.chmod(ADB_PATH, os.stat(ADB_PATH).st_mode | stat.S_IEXEC)
+
+def download_scrcpy():
+    global SCRCPY_PATH
+    system = platform.system().lower()
+    scrcpy_dir = "./scrcpy"
+    os.makedirs(scrcpy_dir, exist_ok=True)
+    
+    notify("Baixando scrcpy...", "#ffae00")
+    
+    try:
+        if system == "windows":
+            url = "https://github.com/Genymobile/scrcpy/releases/download/v2.3.1/scrcpy-win64-v2.3.1.zip"
+            zip_path = os.path.join(scrcpy_dir, "scrcpy.zip")
+            urllib.request.urlretrieve(url, zip_path)
+            
+            with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                zip_ref.extractall(scrcpy_dir)
+            
+            os.remove(zip_path)
+            SCRCPY_PATH = os.path.join(scrcpy_dir, "scrcpy-win64-v2.3.1", "scrcpy.exe")
+            
+        elif system == "linux":
+            subprocess.run(["sudo", "apt", "install", "-y", "scrcpy"], check=True)
+            SCRCPY_PATH = "scrcpy"
+            
+        elif system == "darwin":
+            subprocess.run(["brew", "install", "scrcpy"], check=True)
+            SCRCPY_PATH = "scrcpy"
+        
+        notify("scrcpy instalado com sucesso", "lime")
+        return True
+    except Exception as e:
+        notify("Erro ao instalar scrcpy", "red")
+        return False
+
+
+def check_scrcpy():
+    global SCRCPY_PATH
+    
+    # Verifica se já existe no diretório local
+    if os.path.exists("./scrcpy"):
+        for root_dir, _, files in os.walk("./scrcpy"):
+            if "scrcpy.exe" in files or "scrcpy" in files:
+                SCRCPY_PATH = os.path.join(root_dir, "scrcpy.exe" if os.name == "nt" else "scrcpy")
+                return True
+    
+    # Verifica se está instalado no sistema
+    try:
+        result = subprocess.run(["scrcpy", "--version"], 
+                              capture_output=True, text=True)
+        if result.returncode == 0:
+            SCRCPY_PATH = "scrcpy"
+            return True
+    except FileNotFoundError:
+        pass
+    
+    return False
+
 
 def adb(cmd):
-    return subprocess.call(
+    if not ADB_PATH:
+        return ""
+    return subprocess.run(
         [ADB_PATH] + cmd,
-        stderr=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        creationflags=CREATE_NO_WINDOW
-    )
+        capture_output=True,
+        text=True
+    ).stdout
 
-def adb_out(cmd):
-    return subprocess.check_output(
-        [ADB_PATH] + cmd,
-        stderr=subprocess.DEVNULL,
-        creationflags=CREATE_NO_WINDOW
-    ).decode(errors="ignore")
 
-# =====================================================
-# DEVICE
-# =====================================================
+def adb_thread(func):
+    threading.Thread(target=func, daemon=True).start()
 
-def device_connected():
-    try:
-        return len(adb_out(["devices"]).strip().splitlines()) > 1
-    except:
-        return False
+# ================= DEVICE =================
 
-def device_name():
-    try:
-        return adb_out(["shell", "getprop", "ro.product.model"]).strip()
-    except:
-        return "---"
-
-# =====================================================
-# LAUNCHER CONTROLE (NOVO)
-# =====================================================
-
-def get_current_launcher():
-    try:
-        out = adb_out([
-            "shell", "cmd", "package", "resolve-activity",
-            "--brief", "android.intent.action.MAIN",
-            "android.intent.category.HOME"
-        ])
-        return out.strip()
-    except:
-        return None
-
-def disable_other_launchers():
-    try:
-        out = adb_out([
-            "shell", "cmd", "package", "query-activities",
-            "-a", "android.intent.action.MAIN",
-            "-c", "android.intent.category.HOME"
-        ])
-
-        for line in out.splitlines():
-            if "packageName=" in line:
-                pkg = line.split("packageName=")[1].strip()
-                if pkg != DSKEY_PKG:
-                    adb([
-                        "shell", "pm", "disable-user",
-                        "--user", "0", pkg
-                    ])
-    except:
-        pass
-
-def set_dskey_as_launcher():
-    if not device_connected():
-        messagebox.showwarning("DSKEY", "Nenhum dispositivo conectado.")
-        return
-
-    try:
-        disable_other_launchers()
-
-        adb(["shell", "pm", "enable", DSKEY_PKG])
-        adb(["shell", "cmd", "package", "clear", DSKEY_PKG])
-
-        adb([
-            "shell", "monkey",
-            "-p", DSKEY_PKG,
-            "-c", "android.intent.category.HOME", "1"
-        ])
-
-        messagebox.showinfo(
-            "DSKEY",
-            "DSKEY definido como launcher padrão.\n\nEle abrirá automaticamente ao ligar o dispositivo."
-        )
-
-    except Exception as e:
-        messagebox.showerror("Erro", str(e))
-
-def restore_launcher():
-    adb(["shell", "pm", "enable", "com.google.android.tvlauncher"])
-    messagebox.showinfo("DSKEY", "Launcher original restaurado.")
-
-# =====================================================
-# APK - NOVA FUNÇÃO UNIVERSAL
-# =====================================================
-
-def get_package_name_from_apk(apk_path):
-    """Extrai o package name do APK usando aapt ou método alternativo via ADB"""
-    try:
-        # Método 1: Usando aapt local
-        aapt_path = os.path.join(os.path.dirname(ADB_PATH), "aapt")
-        if SYSTEM == "windows":
-            aapt_path += ".exe"
-        
-        if os.path.exists(aapt_path):
-            result = subprocess.check_output(
-                [aapt_path, "dump", "badging", apk_path],
-                stderr=subprocess.DEVNULL,
-                creationflags=CREATE_NO_WINDOW
-            ).decode(errors="ignore")
-            
-            match = re.search(r"package: name='([^']+)'", result)
-            if match:
-                return match.group(1)
-    except:
-        pass
-    
-    try:
-        # Método 2: Usando ADB para obter info do APK após instalação
-        # Obtém lista de pacotes instalados recentemente
-        result = adb_out(["shell", "pm", "list", "packages", "-3"])
-        packages = [line.replace("package:", "").strip() for line in result.splitlines() if line.strip()]
-        
-        # Retorna o último pacote instalado (mais recente)
-        if packages:
-            return packages[-1]
-    except:
-        pass
-    
+def get_device():
+    out = adb(["devices"])
+    for l in out.splitlines():
+        if "\tdevice" in l:
+            return l.split("\t")[0]
     return None
 
-def download_and_install_universal_apk():
-    """Baixa APK, permite seleção e instala na TV Box"""
-    if not device_connected():
-        messagebox.showwarning("DSKEY", "Nenhuma TV Box conectada.")
+
+def get_ip():
+    out = adb(["shell", "ip", "addr", "show", "wlan0"])
+    m = re.search(r"inet (\d+\.\d+\.\d+\.\d+)", out)
+    return m.group(1) if m else None
+
+
+# ================= STATUS =================
+
+def package_status(pkg):
+    if pkg not in adb(["shell", "pm", "list", "packages", pkg]):
+        return "not_found"
+    if pkg in adb(["shell", "pm", "list", "packages", "-d", pkg]):
+        return "disabled"
+    return "enabled"
+
+
+# ================= NOTIFY =================
+
+def notify(msg, color="#1ec6ff"):
+    notif.config(text=msg, fg=color)
+    root.bell()
+    root.after(3000, lambda: notif.config(text=""))
+
+
+# ================= SCRCPY CONTROL =================
+
+def start_scrcpy():
+    global SCRCPY_PROCESS
+    
+    if SCRCPY_PROCESS and SCRCPY_PROCESS.poll() is None:
+        notify("Controle já ativo", "#ffae00")
         return
+    
+    if not get_device():
+        notify("Nenhum dispositivo conectado", "red")
+        return
+    
+    # Verifica e instala scrcpy se necessário
+    if not SCRCPY_PATH:
+        if not check_scrcpy():
+            notify("Instalando scrcpy...", "#ffae00")
+            if not download_scrcpy():
+                return
+    
+    def run():
+        global SCRCPY_PROCESS
+        try:
+            SCRCPY_PROCESS = subprocess.Popen([SCRCPY_PATH, "--stay-awake"])
+            notify("Controle remoto iniciado", "lime")
+        except Exception as e:
+            notify("Erro ao iniciar scrcpy", "red")
+    
+    adb_thread(run)
 
-    url = "https://apks.39b7cb94d40914bac590886981b0ed6e.r2.cloudflarestorage.com/com.alphainventor.filemanager/3.6.7/Gerenciador_Arquivos.apk"
-    apk_path = os.path.join(DOWNLOADS_DIR, "Gerenciador_Arquivos.apk")
 
-    try:
-        messagebox.showinfo(
-            "DSKEY",
-            "Baixando APK...\n\nAguarde alguns segundos."
-        )
-        
-        urllib.request.urlretrieve(url, apk_path)
+def send_back():
+    if not get_device():
+        notify("Nenhum dispositivo conectado", "red")
+        return
+    adb_thread(lambda: (
+        adb(["shell", "input", "keyevent", "KEYCODE_BACK"]),
+        notify("BACK enviado", "#1ec6ff")
+    ))
 
-        if SYSTEM == "windows":
-            os.startfile(DOWNLOADS_DIR)
-        else:
-            subprocess.Popen(["xdg-open", DOWNLOADS_DIR])
 
-        messagebox.showinfo(
-            "DSKEY",
-            "APK baixado com sucesso!\n\nSelecione o APK para instalar na TV Box."
-        )
+def send_home():
+    if not get_device():
+        notify("Nenhum dispositivo conectado", "red")
+        return
+    adb_thread(lambda: (
+        adb(["shell", "input", "keyevent", "KEYCODE_HOME"]),
+        notify("HOME enviado", "#1ec6ff")
+    ))
 
-        selected_apk = filedialog.askopenfilename(
-            initialdir=DOWNLOADS_DIR,
-            title="Selecione o APK para instalar",
-            filetypes=[("APK", "*.apk")]
-        )
 
-        if not selected_apk:
+# ================= CMD MANUAL =================
+
+def abrir_cmd():
+    senha = simpledialog.askstring("Senha", "Digite a senha:", show='*')
+    
+    if senha != CMD_PASSWORD:
+        notify("Senha incorreta", "red")
+        return
+    
+    cmd_window = tk.Toplevel(root)
+    cmd_window.title("CMD Manual - ADB")
+    cmd_window.geometry("600x400")
+    cmd_window.configure(bg="#0f111a")
+    
+    tk.Label(cmd_window, text="Digite os comandos ADB:", 
+             fg="white", bg="#0f111a", 
+             font=("Arial", 10, "bold")).pack(pady=5)
+    
+    output_text = scrolledtext.ScrolledText(
+        cmd_window, 
+        height=15, 
+        bg="#1a1c24", 
+        fg="lime",
+        font=("Courier", 9),
+        insertbackground="white"
+    )
+    output_text.pack(padx=10, pady=5, fill="both", expand=True)
+    
+    input_frame = tk.Frame(cmd_window, bg="#0f111a")
+    input_frame.pack(fill="x", padx=10, pady=5)
+    
+    cmd_entry = tk.Entry(input_frame, bg="#2c2f3a", fg="white", 
+                         font=("Arial", 10), insertbackground="white")
+    cmd_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+    
+    def executar_comando():
+        comando = cmd_entry.get().strip()
+        if not comando:
             return
-
-        messagebox.showinfo(
-            "DSKEY",
-            "Instalando APK na TV Box...\n\nAguarde."
-        )
-
-        result = adb(["install", "-r", selected_apk])
-
-        if result == 0:
-            pkg_name = get_package_name_from_apk(selected_apk)
-            
-            if pkg_name:
-                try:
-                    adb([
-                        "shell", "monkey",
-                        "-p", pkg_name,
-                        "-c", "android.intent.category.LAUNCHER",
-                        "1"
-                    ])
-                    
-                    messagebox.showinfo(
-                        "DSKEY",
-                        f"Aplicativo instalado com sucesso!\n\nAbrindo {pkg_name} na TV Box."
-                    )
-                except:
-                    messagebox.showinfo(
-                        "DSKEY",
-                        "Aplicativo instalado com sucesso!\n\nAbra manualmente na TV Box."
-                    )
-            else:
-                messagebox.showinfo(
-                    "DSKEY",
-                    "Aplicativo instalado com sucesso!\n\nAbra manualmente na TV Box."
+        
+        output_text.insert("end", f"$ adb {comando}\n", "command")
+        output_text.tag_config("command", foreground="#1ec6ff")
+        
+        cmd_entry.delete(0, "end")
+        
+        def run():
+            try:
+                result = subprocess.run(
+                    [ADB_PATH] + comando.split(),
+                    capture_output=True,
+                    text=True,
+                    timeout=30
                 )
-        else:
-            messagebox.showerror(
-                "Erro",
-                "Falha ao instalar o APK.\n\nVerifique a conexão com a TV Box."
-            )
+                output = result.stdout + result.stderr
+                if output:
+                    output_text.insert("end", output + "\n")
+                else:
+                    output_text.insert("end", "Comando executado com sucesso.\n", "success")
+                    output_text.tag_config("success", foreground="lime")
+            except subprocess.TimeoutExpired:
+                output_text.insert("end", "ERRO: Timeout do comando\n", "error")
+                output_text.tag_config("error", foreground="red")
+            except Exception as e:
+                output_text.insert("end", f"ERRO: {str(e)}\n", "error")
+                output_text.tag_config("error", foreground="red")
+            
+            output_text.see("end")
+        
+        threading.Thread(target=run, daemon=True).start()
+    
+    tk.Button(input_frame, text="Executar", command=executar_comando,
+              bg="#1ec6ff", fg="black", font=("Arial", 9, "bold")).pack(side="left")
+    
+    cmd_entry.bind("<Return>", lambda e: executar_comando())
+    
+    output_text.insert("end", "CMD Manual ADB - Digite os comandos sem o prefixo 'adb'\n")
+    output_text.insert("end", "Exemplo: devices, shell pm list packages, etc.\n\n")
 
-    except Exception as e:
-        messagebox.showerror("Erro", f"Erro ao processar APK:\n\n{str(e)}")
+
+# ================= ACTIONS =================
+
+def ativar_dskey():
+    def run():
+        if package_status(PACKAGE_DSKEY) == "not_found":
+            notify("DSKEY não encontrado", "red")
+            return
+        adb(["shell", "pm", "enable", PACKAGE_DSKEY])
+        adb(["shell", "monkey", "-p", PACKAGE_DSKEY,
+             "-c", "android.intent.category.HOME", "1"])
+        adb(["shell", "pm", "disable-user", "--user", "0", PACKAGE_LAUNCHER])
+        notify("DSKEY ativado", "lime")
+    adb_thread(run)
 
 
-def download_dskey():
-    webbrowser.open("https://baixar-dskey.vercel.app")
-   
-
-def install_dskey():
+def instalar_dskey():
     apk = filedialog.askopenfilename(filetypes=[("APK", "*.apk")])
     if apk:
-        adb(["install", "-r", apk])
-        messagebox.showinfo("DSKEY", "DSKEY instalado com sucesso.")
+        adb_thread(lambda: (
+            adb(["install", "-r", apk]),
+            notify("DSKEY instalado", "lime")
+        ))
 
-def uninstall_dskey():
-    if messagebox.askyesno("DSKEY", "Deseja desinstalar o DSKEY?"):
-        adb(["uninstall", DSKEY_PKG])
 
-# =====================================================
-# WIFI ADB
-# =====================================================
+def restaurar_launcher():
+    adb_thread(lambda: (
+        adb(["shell", "pm", "enable", PACKAGE_LAUNCHER]),
+        adb(["shell", "pm", "disable-user", "--user", "0", PACKAGE_DSKEY]),
+        notify("Launcher restaurado", "#1ec6ff")
+    ))
 
-def is_tcp():
-    try:
-        return ":5555" in adb_out(["devices"])
-    except:
-        return False
 
-def toggle_wifi():
-    try:
-        if is_tcp():
-            adb(["disconnect"])
+def desinstalar_dskey():
+    adb_thread(lambda: (
+        adb(["uninstall", PACKAGE_DSKEY]),
+        notify("DSKEY desinstalado", "red")
+    ))
+
+
+def ativar_tcp():
+    def run():
+        if not get_device():
+            notify("Conecte via USB primeiro", "red")
             return
-        ip = adb_out(["shell", "ip", "route"]).split("src ")[1].split()[0]
         adb(["tcpip", "5555"])
-        adb(["connect", f"{ip}:5555"])
-    except:
-        pass
+        time.sleep(1)
+        ip = get_ip()
+        if ip:
+            adb(["connect", f"{ip}:5555"])
+            notify("TCP ativado", "lime")
+    adb_thread(run)
 
-# =====================================================
-# LOADING
-# =====================================================
 
-class Loading(tk.Toplevel):
-    def __init__(self, root):
-        super().__init__(root)
-        self.root = root
-        self.configure(bg="#05070d")
-        self.geometry("360x180")
-        self.resizable(False, False)
-        self.title("DSKEY")
+def reconnect_device():
+    adb_thread(lambda: (
+        adb(["disconnect"]),
+        adb(["start-server"]),
+        notify("Reconectando dispositivo", "#ffae00")
+    ))
 
-        self.label = tk.Label(self, text="Iniciando...",
-                              fg="#6fbaff", bg="#05070d",
-                              font=("Segoe UI", 12, "bold"))
-        self.label.pack(pady=30)
 
-        self.spin = tk.Label(self, text="⠋",
-                             fg="#00ff9c", bg="#05070d",
-                             font=("Consolas", 26))
-        self.spin.pack()
+def abrir_config_tv():
+    def run():
+        adb(["shell", "am", "start", "-a", "android.settings.SETTINGS"])
+        notify("Abrindo configurações", "#1ec6ff")
+        time.sleep(1)
+        start_scrcpy()
+    adb_thread(run)
 
-        self.frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
-        self.i = 0
-        self.running = True
 
-        self.after(100, self.animate)
-        threading.Thread(target=self.worker, daemon=True).start()
+def reboot_tv():
+    adb_thread(lambda: (
+        adb(["reboot"]),
+        notify("Reiniciando TV Box", "#ffae00")
+    ))
 
-    def animate(self):
-        if self.running:
-            self.spin.config(text=self.frames[self.i])
-            self.i = (self.i + 1) % len(self.frames)
-            self.after(100, self.animate)
 
-    def worker(self):
-        try:
-            if not adb_ok():
-                download_adb(lambda t: self.after(0, lambda: self.label.config(text=t)))
-        except Exception as e:
-            def show_and_exit():
-                try:
-                    messagebox.showerror("Erro", str(e))
-                finally:
-                    self.root.quit()
-                    self.root.destroy()
+def abrir_site():
+    webbrowser.open("https://baixar-dskey.vercel.app")
 
-            self.after(0, show_and_exit)
-            return
+# ================= SIDEBAR =================
 
-        self.after(0, self.finish)
+def toggle_sidebar(event=None):
+    global SIDEBAR_OPEN
+    if SIDEBAR_OPEN:
+        sidebar.place_forget()
+        SIDEBAR_OPEN = False
+    else:
+        sidebar.place(x=0, y=0, height=root.winfo_height())
+        SIDEBAR_OPEN = True
 
-    def finish(self):
-        self.running = False
-        self.destroy()
-        self.root.deiconify()
 
-# =====================================================
-# UI
-# =====================================================
+def close_sidebar(event):
+    global SIDEBAR_OPEN
+    if SIDEBAR_OPEN and event.x > 200:
+        sidebar.place_forget()
+        SIDEBAR_OPEN = False
+
+# ================= UI =================
 
 root = tk.Tk()
-root.withdraw()
-root.title("DSKEY")
-root.geometry("560x460")
-root.configure(bg="#05070d")
+root.title("DSKEY Manager")
+root.geometry("540x500")
+root.configure(bg="#0f111a")
 root.resizable(False, False)
+root.bind("<Button-1>", close_sidebar)
 
-content = tk.Frame(root, bg="#05070d")
-content.pack(fill="both", expand=True)
+# -------- TOP BAR --------
 
-overlay = tk.Frame(root, bg="#000000")
-overlay.place_forget()
+top = tk.Frame(root, bg="#0f111a")
+top.pack(fill="x")
 
-MENU_WIDTH = 260
-menu = tk.Frame(root, bg="#0b0f1a", width=MENU_WIDTH, height=460)
-menu.place(x=-MENU_WIDTH, y=0)
+menu_btn = tk.Label(top, text="☰", fg="white",
+                    bg="#0f111a", font=("Arial", 18))
+menu_btn.pack(side="left", padx=10)
+menu_btn.bind("<Button-1>", toggle_sidebar)
 
-def slide_menu(opening):
-    global menu_open
-    x = menu.winfo_x()
-    if opening:
-        overlay.place(x=0, y=0, relwidth=1, relheight=1)
-        if x < 0:
-            menu.place(x=min(x + 20, 0), y=0)
-            root.after(8, lambda: slide_menu(True))
-        else:
-            menu_open = True
+# -------- TITLE --------
+
+title_label = tk.Label(
+    root,
+    text="Dskey Software",
+    fg="#1ec6ff",
+    bg="#0f111a",
+    font=("Arial", 18, "bold")
+)
+title_label.pack(pady=(25, 10))
+
+# -------- CENTER BUTTONS --------
+
+center_container = tk.Frame(root, bg="#0f111a")
+center_container.pack(expand=True)
+
+btn_cfg = dict(width=34, height=2, bg="#2c2f3a", fg="white")
+
+tk.Button(center_container, text="Ativar DSKEY",
+          command=ativar_dskey, **btn_cfg).pack(pady=6)
+
+tk.Button(center_container, text="Instalar DSKEY",
+          command=instalar_dskey, **btn_cfg).pack(pady=6)
+
+tk.Button(center_container, text="Restaurar Launcher",
+          command=restaurar_launcher, **btn_cfg).pack(pady=6)
+
+# -------- BOTTOM STATUS --------
+
+bottom_container = tk.Frame(root, bg="#0f111a")
+bottom_container.pack(side="bottom", pady=10)
+
+device_label = tk.Label(
+    bottom_container,
+    text="DEVICE: nenhum",
+    fg="red",
+    bg="#0f111a",
+    font=("Arial", 10, "bold")
+)
+device_label.pack(pady=3)
+
+status_frame = tk.Frame(bottom_container, bg="#0f111a")
+status_frame.pack(pady=3)
+
+tk.Label(status_frame, text="DSKEY", fg="white",
+         bg="#0f111a").pack(side="left", padx=6)
+
+dskey_dot = tk.Label(status_frame, text="●",
+                     fg="red", bg="#0f111a", font=("Arial", 10, "bold"))
+dskey_dot.pack(side="left", padx=6)
+
+tk.Label(status_frame, text="LAUNCHER", fg="white",
+         bg="#0f111a").pack(side="left", padx=6)
+
+launcher_dot = tk.Label(status_frame, text="●",
+                        fg="red", bg="#0f111a", font=("Arial", 10, "bold"))
+launcher_dot.pack(side="left", padx=6)
+
+tk.Label(bottom_container, text=APP_VERSION,
+         fg="#666", bg="#0f111a",
+         font=("Arial", 8)).pack(pady=5)
+
+notif = tk.Label(root, text="", bg="#0f111a",
+                 fg="#1ec6ff", font=("Arial", 10, "bold"))
+notif.pack(side="bottom")
+
+# -------- SIDEBAR --------
+
+sidebar = tk.Frame(root, width=200, bg="#10121a")
+
+def sb_btn(text, cmd):
+    tk.Button(sidebar, text=text, command=cmd,
+              bg="#10121a", fg="white",
+              relief="flat", anchor="w").pack(fill="x", pady=6, padx=10)
+
+sb_btn("📡 TCP", ativar_tcp)
+sb_btn("📥 Baixar DSKEY", abrir_site)
+sb_btn("🔄 Reconectar dispositivo", reconnect_device)
+sb_btn("🗑️ Desinstalar DSKEY", desinstalar_dskey)
+sb_btn("⚙️ Configurações da TV", abrir_config_tv)
+sb_btn("🎮 Iniciar Controle Remoto", start_scrcpy)
+sb_btn("◀️ BACK", send_back)
+sb_btn("🏠 HOME", send_home)
+sb_btn("💻 CMD Manual", abrir_cmd)
+sb_btn("⏻ Reboot TV Box", reboot_tv)
+
+# ================= LOOP =================
+
+def update_status():
+    device = get_device()
+    if device:
+        device_label.config(text=f"DEVICE: {device}", fg="lime")
     else:
-        if x > -MENU_WIDTH:
-            menu.place(x=max(x - 20, -MENU_WIDTH), y=0)
-            root.after(8, lambda: slide_menu(False))
-        else:
-            overlay.place_forget()
-            menu_open = False
+        device_label.config(text="DEVICE: nenhum", fg="red")
 
-overlay.bind("<Button-1>", lambda e: slide_menu(False))
+    ds = package_status(PACKAGE_DSKEY)
+    ln = package_status(PACKAGE_LAUNCHER)
 
-def toggle_menu():
-    slide_menu(not menu_open)
-
-def check_update():
-    webbrowser.open(UPDATE_URL)
-def open_admin_config():
-    webbrowser.open(CONFIG_FILE if os.path.exists(CONFIG_FILE) else BASE_DIR)
-
-# =====================================================
-# COMPONENTES VISUAIS
-# =====================================================
-
-tk.Label(menu, text="MENU", fg="#6fbaff", bg="#0b0f1a",
-         font=("Segoe UI", 13, "bold")).pack(pady=18)
-
-def menu_btn(text, cmd):
-    tk.Button(menu, text=text, command=cmd,
-              font=("Segoe UI", 11, "bold"),
-              fg="#cfd8ff", bg="#0b1b3a",
-              activebackground="#142b5c",
-              bd=0, width=24, height=2).pack(pady=6)
-
-menu_btn("📦 INSTALAR DSKEY", install_dskey)
-menu_btn("🗑 DESINSTALAR DSKEY", uninstall_dskey)
-menu_btn("📞 SUPORTE (WhatsApp)", lambda: webbrowser.open("https://wa.me/54997124880"))
-menu_btn("🌐 PAINEL", lambda: webbrowser.open("https://dsignertv.com.br"))
-menu_btn("🔄 ATUALIZAÇÃO", check_update)
-menu_btn("⚙️ CONFIG ADM", open_admin_config)
-
-
-tk.Button(content, text="📶", font=("Segoe UI", 18),
-          fg="#00ff9c", bg="#05070d", bd=0,
-          command=toggle_wifi).place(x=15, y=10)
-
-tk.Button(content, text="👤", font=("Segoe UI", 16),
-          fg="#6fbaff", bg="#05070d", bd=0,
-          command=toggle_menu).place(x=18, y=55)
-
-tk.Label(content, text="DSKEY INSTALADOR",
-         fg="#6fbaff", bg="#05070d",
-         font=("Segoe UI", 16, "bold")).pack(pady=(30,10))
-
-label_device = tk.Label(content, text="DISP: ---",
-                        fg="#3cff3c", bg="#05070d",
-                        font=("Segoe UI", 11, "bold"))
-label_device.pack(pady=10)
-
-def neon(text, cmd):
-    tk.Button(content, text=text, command=cmd,
-              font=("Segoe UI", 11, "bold"),
-              fg="#cfd8ff", bg="#0b1b3a",
-              activebackground="#142b5c",
-              bd=2, relief="ridge",
-              width=22, height=2).pack(pady=8)
-
-neon("ATIVAR DSKEY", set_dskey_as_launcher)
-neon("REST LAUNCHER", restore_launcher)
-neon("BAIXAR APK", download_dskey)
-
-tk.Label(content, text="🔘APP", fg="#00ff00",
-         bg="#05070d", font=("Segoe UI", 10, "bold")).place(x=20, y=395)
-
-tk.Label(content, text="🔘LAUNCHER", fg="#00ff00",
-         bg="#05070d", font=("Segoe UI", 10, "bold")).place(x=20, y=420)
-
-tk.Label(content, text=APP_VERSION,
-         fg="#6f7cff", bg="#05070d",
-         font=("Segoe UI", 9)).place(x=500, y=420)
-
-def refresh():
-    label_device.config(
-        text=f"DISP: {device_name()}" if device_connected() else "DISP: ---"
+    dskey_dot.config(
+        fg="lime" if ds == "enabled"
+        else "#1ec6ff" if ds == "disabled"
+        else "red"
     )
-    root.after(3000, refresh)
 
-refresh()
+    launcher_dot.config(
+        fg="lime" if ln == "enabled"
+        else "#1ec6ff" if ln == "disabled"
+        else "red"
+    )
 
-# =====================================================
-# START
-# =====================================================
+    root.after(3000, update_status)
 
-Loading(root)
+# ================= START =================
+
+if setup_adb():
+    adb(["start-server"])
+    check_scrcpy()
+    update_status()
+else:
+    device_label.config(text="ADB ERRO", fg="red")
+
 root.mainloop()
